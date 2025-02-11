@@ -1,0 +1,136 @@
+#include <Wire.h>
+#include <Adafruit_MLX90614.h>
+#include <DFRobot_Heartrate.h>
+
+// Blynk template and auth setup
+#define BLYNK_TEMPLATE_ID "TMPL3DWOeja5S"
+#define BLYNK_TEMPLATE_NAME "HeartRate"
+#define BLYNK_AUTH_TOKEN "O3ew8skLfgDN2mDC1Nt5q6WnQv1WqPgc"
+
+#include <WiFi.h>
+#include <BlynkSimpleEsp32.h>
+#include <HTTPClient.h>
+
+// WiFi credentials
+#define WIFI_SSID "Student"
+#define WIFI_PASSWORD "Learn@123"
+
+// Twilio credentials
+#define TWILIO_ACCOUNT_SID "AC924086f49871601e950cc587b6764d94"
+#define TWILIO_AUTH_TOKEN "e7c20b930038f5ad7f8fab0eca4a3e55"
+#define TWILIO_PHONE_NUMBER "+17278771649"
+#define TO_PHONE_NUMBER "+919********"
+
+// Pin definitions
+int ecgPin = 36;    // ECG signal input pin (analog input on ESP32)
+int heartRate = 0;  // Store heart rate value
+float tempC = 21;
+// Blynk virtual pins for temperature and heart rate
+#define TEMP_VPIN V1   // Virtual Pin for temperature
+#define HR_VPIN V2     // Virtual Pin for heart rate
+#define ECG_VPIN V0
+
+// Initialize Blynk
+char auth[] = BLYNK_AUTH_TOKEN;
+
+Adafruit_MLX90614 mlx = Adafruit_MLX90614();  // Create the MLX90614 object
+DFRobot_Heartrate hrSensor(ecgPin);           // 'A' for analog mode
+
+// Thresholds
+float LOW_HEART_RATE_THRESHOLD = 50.0;   // Below 50 BPM, send SMS
+float HIGH_TEMPERATURE_THRESHOLD = 40.0; // Above 40 °C, send SMS
+
+void setup() {
+  Serial.begin(115200);  // Initialize serial communication
+  Wire.begin();          // Start I2C communication
+  mlx.begin();           // Initialize the MLX90614 temperature sensor
+
+  // Connect to WiFi
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("WiFi connected!");
+
+  // Initialize Blynk
+  Blynk.begin(auth, WIFI_SSID, WIFI_PASSWORD);
+
+  // Initialize the AD8232 heart rate sensor pin
+  pinMode(ecgPin, INPUT);
+}
+
+void loop() {
+  // Read ECG signal and calculate heart rate
+  int ecgSignal = analogRead(ecgPin);
+  if (ecgSignal > 500) {  // Threshold to detect heartbeat
+    static unsigned long lastBeat = 0;
+    unsigned long currentMillis = millis();
+    if (currentMillis - lastBeat > 200) {  // Minimum interval between beats
+      lastBeat = currentMillis;
+      Serial.println("Heartbeat detected!");
+      heartRate++;  // Increment heartbeat count
+    }
+  }
+
+  // Calculate BPM (beats per minute)
+  static unsigned long lastCalcTime = 0;
+  if (millis() - lastCalcTime >= 10000) {  // Calculate BPM every 10 seconds
+    heartRate = heartRate * 6;            // Convert to BPM
+    Serial.print("Heart Rate: ");
+    Serial.print(heartRate);
+    Serial.println(" bpm");
+    Blynk.virtualWrite(HR_VPIN, heartRate);  // Send heart rate to Blynk
+    Blynk.virtualWrite(ECG_VPIN, heartRate);
+
+    // Check for low heart rate
+    if (heartRate < LOW_HEART_RATE_THRESHOLD) {
+      sendSMSAlert("Low Heart Rate Alert: " + String(heartRate) + " bpm");
+    }
+    heartRate = 0;  // Reset heart rate count
+    lastCalcTime = millis();
+  }
+
+  // Read temperature
+  float temperature = mlx.readObjectTempC();
+  Serial.print("Temperature: ");
+  Serial.print(temperature);
+  Serial.println(" °C");
+  Blynk.virtualWrite(TEMP_VPIN, temperature);  // Send temperature to Blynk
+
+  // Check for high temperature
+  if (temperature > HIGH_TEMPERATURE_THRESHOLD) {
+    sendSMSAlert("High Temperature Alert: " + String(temperature) + " °C");
+  }
+
+  Blynk.run();  // Run Blynk
+  delay(1000);  // Delay to reduce sensor read frequency
+}
+
+// Function to send SMS using Twilio API
+void sendSMSAlert(String alertMessage) {
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    String url = "https://api.twilio.com/2010-04-01/Accounts/" + String(TWILIO_ACCOUNT_SID) +
+                 "/Messages.json";
+    http.begin(url);
+    http.setAuthorization(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
+    http.addHeader("Content-Type", "application/x-www-form-urlencoded");
+
+    String postData = "From=" + String(TWILIO_PHONE_NUMBER) +
+                      "&To=" + String(TO_PHONE_NUMBER) +
+                      "&Body=" + alertMessage;
+
+    int httpResponseCode = http.POST(postData);
+
+    if (httpResponseCode == 200) {
+      Serial.println("SMS Sent Successfully!");
+    } else {
+      Serial.println("Error sending SMS: " + String(httpResponseCode));
+    }
+
+    http.end();
+  } else {
+    Serial.println("WiFi not connected. SMS not sent.");
+  }
+}
